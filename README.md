@@ -210,9 +210,10 @@ local-address=0.0.0.0
 master=no
 secondary=yes
 superslave=yes
-allow-notify-from=<master ip>
-allow-dnsupdate-from=<master ip>
+allow-notify-from=masterip
+allow-dnsupdate-from=masterip
 default-soa-content=ns1.domain. ns2.domain. 2021101402 21600 3600 1209600 21600
+default-soa-edit=INCEPTION-INCREMENT
 
 ```
 #### Update DB in slave server
