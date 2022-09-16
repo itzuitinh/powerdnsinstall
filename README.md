@@ -227,3 +227,158 @@ restart services
 sudo systemctl restart pdns
 sudo systemctl enable pdns
 ```
+### Install PowerDNS-Admin On Master node
+```
+sudo apt install python3-dev
+sudo apt install -y libmysqlclient-dev libsasl2-dev libldap2-dev libssl-dev libxml2-dev libxslt1-dev libxmlsec1-dev libffi-dev pkg-config apt-transport-https virtualenv build-essential python3-venv
+curl -sL https://deb.nodesource.com/setup_16.x | sudo bash -
+sudo apt install -y nodejs
+curl -fsSL https://dl.yarnpkg.com/debian/pubkey.gpg | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/yarn-keyring.gpg
+echo "deb https://dl.yarnpkg.com/debian/ stable main" | sudo tee /etc/apt/sources.list.d/yarn.list
+sudo apt update
+sudo apt install -y yarn
+sudo su -
+git clone https://github.com/ngoduykhanh/PowerDNS-Admin.git /opt/web/powerdns-admin
+cd /opt/web/powerdns-admin
+python3 -mvenv ./venv
+source ./venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+cp /opt/web/powerdns-admin/configs/development.py /opt/web/powerdns-admin/configs/production.py
+vim /opt/web/powerdns-admin/configs/production.py
+```
+Comment out SQLite SQLALCHEMY_DATABASE_URI line and uncomment MySQL one:
+```
+### DATABASE CONFIG
+SQLA_DB_USER = 'powerdns'
+SQLA_DB_PASSWORD = 'Str0ngPasswOrd'
+SQLA_DB_HOST = '127.0.0.1'
+SQLA_DB_NAME = 'powerdns'
+SQLALCHEMY_TRACK_MODIFICATIONS = True
+
+### DATABASE - MySQL
+#SQLALCHEMY_DATABASE_URI = 'sqlite:///' + os.path.join(basedir, 'pdns.db')
+SQLALCHEMY_DATABASE_URI = 'mysql://'+SQLA_DB_USER+':'+SQLA_DB_PASSWORD+'@'+SQLA_DB_HOST+'/'+SQLA_DB_NAME
+```
+```
+export FLASK_APP=powerdnsadmin/__init__.py
+export FLASK_CONF=../configs/production.py
+flask db upgrade
+flask db migrate -m "Init DB"
+yarn install --pure-lockfile
+```
+Configure systemd service and Nginx
+```
+sudo vim /etc/systemd/system/powerdns-admin.service
+[Install]
+WantedBy=multi-user.target
+
+[Unit]
+Description=PowerDNS-Admin
+Requires=powerdns-admin.socket
+After=network.target
+
+[Service]
+PIDFile=/run/powerdns-admin/pid
+User=pdns
+Group=pdns
+WorkingDirectory=/opt/web/powerdns-admin
+ExecStart=/opt/web/powerdns-admin/venv/bin/gunicorn --pid /run/powerdns-admin/pid --bind unix:/run/powerdns-admin/socket 'powerdnsadmin:create_app()'
+ExecReload=/bin/kill -s HUP $MAINPID
+ExecStop=/bin/kill -s TERM $MAINPID
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+
+```
+
+```
+vi /etc/systemd/system/powerdns-admin.service.d/override.conf
+[Service]
+Environment="FLASK_CONF=../configs/production.py"
+```
+```
+ sudo vim /etc/systemd/system/powerdns-admin.socket
+ [Unit]
+Description=PowerDNS-Admin socket
+
+[Socket]
+ListenStream=/run/powerdns-admin/socket
+
+[Install]
+WantedBy=sockets.target
+
+```
+```
+sudo vim /etc/tmpfiles.d/powerdns-admin.conf
+d /run/powerdns-admin 0755 pdns pdns -
+
+```
+```
+sudo systemctl daemon-reload
+sudo systemctl restart powerdns-admin.socket
+sudo systemctl enable powerdns-admin.socket
+sudo chown -R pdns:pdns /run/powerdns-admin
+sudo chown -R pdns:pdns /opt/web/powerdns-admin
+```
+```
+systemctl status powerdns-admin.socket
+```
+Install and Configure Nginx for Powerdns-Admin
+```
+sudo apt install nginx
+
+```
+```
+sudo vim /etc/nginx/conf.d/powerdns-admin.conf
+```
+```
+server {
+  listen *:80;
+  server_name               domain.com;
+
+  index                     index.html index.htm index.php;
+  root                      /opt/web/powerdns-admin;
+  access_log                /var/log/nginx/powerdns_admin_access.log combined;
+  error_log                 /var/log/nginx/powerdns_admin_error.log;
+
+  client_max_body_size              10m;
+  client_body_buffer_size           128k;
+  proxy_redirect                    off;
+  proxy_connect_timeout             90;
+  proxy_send_timeout                90;
+  proxy_read_timeout                90;
+  proxy_buffers                     32 4k;
+  proxy_buffer_size                 8k;
+  proxy_set_header                  Host $host;
+  proxy_set_header                  X-Real-IP $remote_addr;
+  proxy_set_header                  X-Forwarded-For $proxy_add_x_forwarded_for;
+  proxy_headers_hash_bucket_size    64;
+
+  location ~ ^/static/  {
+    include  /etc/nginx/mime.types;
+    root /opt/web/powerdns-admin/powerdnsadmin;
+
+    location ~*  \.(jpg|jpeg|png|gif)$ {
+      expires 365d;
+    }
+
+    location ~* ^.+.(css|js)$ {
+      expires 7d;
+    }
+  }
+
+  location / {
+    proxy_pass            http://unix:/run/powerdns-admin/socket;
+    proxy_read_timeout    120;
+    proxy_connect_timeout 120;
+    proxy_redirect        off;
+  }
+}
+
+```
+```
+sudo nginx -t
+sudo systemctl restart nginx
+```
